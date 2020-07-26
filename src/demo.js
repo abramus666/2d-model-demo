@@ -39,11 +39,11 @@ function createCamera(canvas, min_width, min_height) {
       setup: function (pos) {
          let canvas_ratio = (canvas.clientWidth / canvas.clientHeight);
          if ((min_width / min_height) < canvas_ratio) {
-            view_width  = Math.round(min_height * canvas_ratio);
-            view_height = Math.round(min_height);
+            view_width  = min_height * canvas_ratio;
+            view_height = min_height;
          } else {
-            view_width  = Math.round(min_width);
-            view_height = Math.round(min_width / canvas_ratio);
+            view_width  = min_width;
+            view_height = min_width / canvas_ratio;
          }
          let m1 = Matrix3.scale(2.0 / view_width, 2.0 / view_height);
          let m2 = Matrix3.translation(-pos[0], -pos[1]);
@@ -204,37 +204,46 @@ function createResourceLoader(gl) {
 
 //==============================================================================
 
+const GIRL_APPEAR_DELAY = 0.5;
+
 let globals = {};
+let girls = [];
+let delay = 0;
 
-let objects = [
-   {
-      texture_name: 'gfx/guy.png',
-      model_name:   'gfx/guy.js',
-      position:     [0, 0],
-      animations:   ['punch', 'kick'],
-      anim_times:   [0.3, 0.6],
-      anim_pos:     0
-   }
-];
+function createGirl(scale, direction) {
 
-function drawObject(object, dt) {
-   let texture = globals.loader.get(object.texture_name);
-   let model = globals.loader.get(object.model_name);
-   let m1 = globals.camera.getMatrix();
-   let m2 = Matrix3.multiply(m1, Matrix3.translation(object.position[0], object.position[1]));
-   let m3 = Matrix3.multiply(m2, Matrix3.scale(1, -1));
-   let ix = Math.floor(object.anim_pos);
+   function maxX() {return (scale * 0.1) + (globals.camera.getViewWidth() / 2);}
 
-   texture.enable();
-   model.draw(globals.shader_model, m3, object.animations[ix], object.anim_pos - ix);
-
-   object.anim_pos += dt / object.anim_times[ix];
-   if (object.anim_pos >= object.animations.length) {
-      object.anim_pos -= object.animations.length;
-   }
+   let texture = globals.loader.get('gfx/girl.png');
+   let model = globals.loader.get('gfx/girl.js');
+   let anim_name = 'walk';
+   let anim_time = 1.5;
+   let anim_pos = 0;
+   let dx = (direction * scale * 0.9) / anim_time;
+   let x = -direction * maxX();
+   let y = -scale * 0.5;
+   return {
+      getScale: function () {return scale;},
+      isGone: function () {return (x > maxX() || x < -maxX());},
+      draw: function () {
+         let m1 = globals.camera.getMatrix();
+         let m2 = Matrix3.multiply(m1, Matrix3.translation(x, y));
+         let m3 = Matrix3.multiply(m2, Matrix3.scale(-direction * scale, -scale));
+         texture.enable();
+         model.draw(globals.shader_model, m3, anim_name, anim_pos);
+      },
+      update: function (dt) {
+         anim_pos += dt / anim_time;
+         if (anim_pos >= 1.0) {
+            anim_pos -= 1.0;
+         }
+         x += dx * dt;
+      }
+   };
 }
 
 function tick(current_time) {
+   let dt = 1.0 / 60.0;
 
    let cw = globals.canvas.clientWidth;
    let ch = globals.canvas.clientHeight;
@@ -247,13 +256,24 @@ function tick(current_time) {
    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
    gl.enable(gl.BLEND);
-   gl.clearColor(0.5, 0.5, 0.5, 1);
+   gl.clearColor(1, 1, 0.5, 1);
    gl.clear(gl.COLOR_BUFFER_BIT);
 
    globals.camera.setup([0, 0]);
    globals.shader_model.enable();
-   for (let obj of objects) {
-      drawObject(obj, (1.0 / 60.0));
+   for (let girl of girls) {
+      girl.draw();
+      girl.update(dt);
+   }
+   girls = girls.filter(function (girl) {return !girl.isGone();});
+   delay -= dt;
+   if (delay <= 0) {
+      const scales = [0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.6, 0.7, 0.8, 0.9, 1, 2, 3, 4, 5];
+      let scale = scales[Math.floor(Math.random() * scales.length)];
+      let direction = (Math.random() > 0.5) ? 1 : -1;
+      girls.push(createGirl(scale, direction));
+      girls.sort(function (a, b) {return a.getScale() - b.getScale();});
+      delay = GIRL_APPEAR_DELAY;
    }
    window.requestAnimationFrame(tick);
 }
@@ -272,13 +292,11 @@ window.onload = function () {
    if (gl) {
       globals.glcontext = gl;
       globals.canvas = canvas;
-      globals.camera = createCamera(canvas, 4, 3);
+      globals.camera = createCamera(canvas, 1, 1);
       globals.shader_model = createShaderForModels(gl);
       globals.loader = createResourceLoader(gl);
-      for (let obj of objects) {
-         globals.loader.loadTexture(obj.texture_name);
-         globals.loader.loadModel(obj.model_name);
-      }
+      globals.loader.loadTexture('gfx/girl.png');
+      globals.loader.loadModel('gfx/girl.js');
       window.requestAnimationFrame(tick_wait);
    }
 };
