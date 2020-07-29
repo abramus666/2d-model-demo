@@ -212,7 +212,7 @@ let delay = 0;
 
 function createGirl(scale, direction) {
 
-   function maxX() {return (scale * 0.1) + (globals.camera.getViewWidth() / 2);}
+   function maxX() {return (scale * 0.35) + (globals.camera.getViewWidth() / 2);}
 
    let texture = globals.loader.get('gfx/girl.png');
    let model = globals.loader.get('gfx/girl.js');
