@@ -55,17 +55,17 @@ function createCamera(canvas, min_width, min_height) {
 
 //==============================================================================
 
-function createShaderProgram(gl, vs_id, fs_id) {
+function createShaderProgram(gl, vs_source, fs_source) {
 
-   function compileShader(id, type) {
+   function compileShader(type, source) {
       let shader = gl.createShader(type);
-      gl.shaderSource(shader, document.getElementById(id).text);
+      gl.shaderSource(shader, source);
       gl.compileShader(shader);
       return (gl.getShaderParameter(shader, gl.COMPILE_STATUS) ? shader : null);
    }
 
-   let vs = compileShader(vs_id, gl.VERTEX_SHADER);
-   let fs = compileShader(fs_id, gl.FRAGMENT_SHADER);
+   let vs = compileShader(gl.VERTEX_SHADER, vs_source);
+   let fs = compileShader(gl.FRAGMENT_SHADER, fs_source);
    let prog = gl.createProgram();
    gl.attachShader(prog, vs);
    gl.attachShader(prog, fs);
@@ -73,29 +73,56 @@ function createShaderProgram(gl, vs_id, fs_id) {
    return (gl.getProgramParameter(prog, gl.LINK_STATUS) ? prog : null);
 }
 
+//==============================================================================
+
+const vertex_shader = `
+   attribute vec2  a_texcoord;
+   attribute vec2  a_position1;
+   attribute vec2  a_position2;
+   uniform   float u_position_delta;
+   uniform   mat3  u_view_matrix;
+   varying   vec2  v_texcoord;
+   void main(void) {
+      vec3 pos = vec3(mix(a_position1, a_position2, u_position_delta), 1.0);
+      gl_Position = vec4((u_view_matrix * pos).xy, 0.0, 1.0);
+      v_texcoord = a_texcoord;
+   }
+`;
+
+const fragment_shader = `
+   precision mediump float;
+   uniform sampler2D u_colormap;
+   varying vec2 v_texcoord;
+   void main(void) {
+      gl_FragColor = texture2D(u_colormap, v_texcoord);
+   }
+`;
+
 function createShaderForModels(gl) {
-   let prog         = createShaderProgram(gl, 'vertex shader', 'fragment shader');
-   let loc_matrix   = gl.getUniformLocation(prog, 'u_matrix');
-   let loc_delta    = gl.getUniformLocation(prog, 'u_delta');
-   let loc_pos1     = gl.getAttribLocation(prog, 'a_pos1');
-   let loc_pos2     = gl.getAttribLocation(prog, 'a_pos2');
-   let loc_texcoord = gl.getAttribLocation(prog, 'a_texcoord');
+   let prog = createShaderProgram(gl, vertex_shader, fragment_shader);
+   let loc_texcoord    = gl.getAttribLocation(prog, 'a_texcoord');
+   let loc_position1   = gl.getAttribLocation(prog, 'a_position1');
+   let loc_position2   = gl.getAttribLocation(prog, 'a_position2');
+   let loc_pos_delta   = gl.getUniformLocation(prog, 'u_position_delta');
+   let loc_view_matrix = gl.getUniformLocation(prog, 'u_view_matrix');
+   let loc_colormap    = gl.getUniformLocation(prog, 'u_colormap');
    return {
       enable: function () {
          gl.useProgram(prog);
-         gl.enableVertexAttribArray(loc_pos1);
-         gl.enableVertexAttribArray(loc_pos2);
          gl.enableVertexAttribArray(loc_texcoord);
+         gl.enableVertexAttribArray(loc_position1);
+         gl.enableVertexAttribArray(loc_position2);
+         gl.uniform1i(loc_colormap, 0);
       },
-      setup: function (matrix, delta, buf_pos1, buf_pos2, buf_texcoord) {
-         gl.uniformMatrix3fv(loc_matrix, false, matrix);
-         gl.uniform1f(loc_delta, delta);
-         gl.bindBuffer(gl.ARRAY_BUFFER, buf_pos1);
-         gl.vertexAttribPointer(loc_pos1, 2, gl.FLOAT, false, 0, 0);
-         gl.bindBuffer(gl.ARRAY_BUFFER, buf_pos2);
-         gl.vertexAttribPointer(loc_pos2, 2, gl.FLOAT, false, 0, 0);
+      setup: function (buf_texcoord, buf_position1, buf_position2, position_delta, view_matrix) {
          gl.bindBuffer(gl.ARRAY_BUFFER, buf_texcoord);
          gl.vertexAttribPointer(loc_texcoord, 2, gl.FLOAT, false, 0, 0);
+         gl.bindBuffer(gl.ARRAY_BUFFER, buf_position1);
+         gl.vertexAttribPointer(loc_position1, 2, gl.FLOAT, false, 0, 0);
+         gl.bindBuffer(gl.ARRAY_BUFFER, buf_position2);
+         gl.vertexAttribPointer(loc_position2, 2, gl.FLOAT, false, 0, 0);
+         gl.uniform1f(loc_pos_delta, position_delta);
+         gl.uniformMatrix3fv(loc_view_matrix, false, view_matrix);
       }
    };
 }
@@ -111,7 +138,8 @@ function createTexture(gl, image) {
    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
    return {
-      enable: function () {
+      bindTo: function (index) {
+         gl.activeTexture(gl.TEXTURE0 + index);
          gl.bindTexture(gl.TEXTURE_2D, texture);
       }
    };
@@ -153,15 +181,15 @@ function createModel(gl, model_data) {
    let texcoord_buffer = createArrayBuffer(gl, model_data['texcoords']);
    let vertex_buffers = createVertexBuffersForFrames(model_data['vertices']);
    return {
-      draw: function (shader, matrix, anim_name, anim_pos) {
+      draw: function (anim_name, anim_pos, shader, view_matrix) {
          if (anim_pos < 0.0) anim_pos = 0.0;
          if (anim_pos > 1.0) anim_pos = 1.0;
          let verts = vertex_buffers[anim_name];
          let n = anim_pos * (verts.length-1);
-         let i1 = Math.floor(n);
+         let i1 = Math.trunc(n);
          let i2 = (i1 + 1) % verts.length;
          let delta = n - i1;
-         shader.setup(matrix, delta, verts[i1].id, verts[i2].id, texcoord_buffer.id);
+         shader.setup(texcoord_buffer.id, verts[i1].id, verts[i2].id, delta, view_matrix);
          gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, index_buffer.id);
          gl.drawElements(gl.TRIANGLES, index_buffer.len, gl.UNSIGNED_SHORT, 0);
       }
@@ -214,7 +242,7 @@ function createGirl(scale, direction) {
 
    function maxX() {return (scale * 0.35) + (globals.camera.getViewWidth() / 2);}
 
-   let texture = globals.loader.get('gfx/girl.png');
+   let colormap = globals.loader.get('gfx/girl.png');
    let model = globals.loader.get('gfx/girl.js');
    let anim_name = 'walk';
    let anim_time = 1.5;
@@ -226,11 +254,10 @@ function createGirl(scale, direction) {
       getScale: function () {return scale;},
       isGone: function () {return (x > maxX() || x < -maxX());},
       draw: function () {
-         let m1 = globals.camera.getMatrix();
-         let m2 = Matrix3.multiply(m1, Matrix3.translation(x, y));
-         let m3 = Matrix3.multiply(m2, Matrix3.scale(-direction * scale, -scale));
-         texture.enable();
-         model.draw(globals.shader_model, m3, anim_name, anim_pos);
+         let model_mat = Matrix3.multiply(Matrix3.translation(x, y), Matrix3.scale(-direction * scale, -scale));
+         let view_mat = Matrix3.multiply(globals.camera.getMatrix(), model_mat);
+         colormap.bindTo(0);
+         model.draw(anim_name, anim_pos, globals.shader_model, view_mat);
       },
       update: function (dt) {
          anim_pos += dt / anim_time;
