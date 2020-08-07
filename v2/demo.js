@@ -59,21 +59,45 @@ const vertex_shader = `
    uniform mat3  u_model_matrix;
    uniform mat3  u_camera_matrix;
    varying vec2  v_texcoord;
+   varying vec3  v_position;
 
    void main(void) {
       vec3 pos = vec3(mix(a_position1, a_position2, u_position_delta), 1.0);
       v_texcoord = a_texcoord;
+      v_position = vec3((u_model_matrix * pos).xy, 0.0);
       gl_Position = vec4((u_camera_matrix * u_model_matrix * pos).xy, 0.0, 1.0);
    }
 `;
 
 const fragment_shader = `
-   precision mediump float;
-   uniform sampler2D u_colormap;
-   varying vec2 v_texcoord;
+   precision highp float;
+   uniform sampler2D u_diffmap;
+   uniform sampler2D u_specmap;
+   uniform sampler2D u_normalmap;
+   uniform mat3  u_model_matrix;
+   uniform vec3  u_camera_position;
+   uniform vec3  u_light_position;
+   uniform float u_light_radius;
+   varying vec2  v_texcoord;
+   varying vec3  v_position;
 
    void main(void) {
-      gl_FragColor = texture2D(u_colormap, v_texcoord);
+      vec4 diff_color = texture2D(u_diffmap, v_texcoord);
+      vec4 spec_color = texture2D(u_specmap, v_texcoord);
+      vec4 normal_color = texture2D(u_normalmap, v_texcoord);
+
+      vec3 normal = normalize(u_model_matrix * (normal_color.rgb * 2.0 - 1.0));
+      vec3 camera_dir = normalize(u_camera_position - v_position);
+      vec3 light_dir = normalize(u_light_position - v_position);
+      vec3 reflect_dir = reflect(-light_dir, normal);
+
+      float light_dist = distance(u_light_position, v_position);
+      float light = max(1.0 - (light_dist / u_light_radius), 0.0);
+      float diff = max(dot(normal, light_dir), 0.0);
+      float spec = pow(max(dot(camera_dir, reflect_dir), 0.0), 32.0);
+
+      vec3 color = light * ((diff * diff_color.rgb) + (spec * spec_color.rgb));
+      gl_FragColor = vec4(color, diff_color.a);
    }
 `;
 
@@ -85,14 +109,21 @@ function createShaderForModels(gl) {
    let loc_pos_delta     = gl.getUniformLocation(prog, 'u_position_delta');
    let loc_model_matrix  = gl.getUniformLocation(prog, 'u_model_matrix');
    let loc_camera_matrix = gl.getUniformLocation(prog, 'u_camera_matrix');
-   let loc_colormap      = gl.getUniformLocation(prog, 'u_colormap');
+   let loc_camera_pos    = gl.getUniformLocation(prog, 'u_camera_position');
+   let loc_light_pos     = gl.getUniformLocation(prog, 'u_light_position');
+   let loc_light_radius  = gl.getUniformLocation(prog, 'u_light_radius');
+   let loc_diffmap       = gl.getUniformLocation(prog, 'u_diffmap');
+   let loc_specmap       = gl.getUniformLocation(prog, 'u_specmap');
+   let loc_normalmap     = gl.getUniformLocation(prog, 'u_normalmap');
    return {
       enable: function () {
          gl.useProgram(prog);
          gl.enableVertexAttribArray(loc_texcoord);
          gl.enableVertexAttribArray(loc_position1);
          gl.enableVertexAttribArray(loc_position2);
-         gl.uniform1i(loc_colormap, 0);
+         gl.uniform1i(loc_diffmap, 0);
+         gl.uniform1i(loc_specmap, 1);
+         gl.uniform1i(loc_normalmap, 2);
       },
       setupShape: function (buf_texcoord, buf_position1, buf_position2, position_delta) {
          gl.bindBuffer(gl.ARRAY_BUFFER, buf_texcoord);
@@ -106,8 +137,13 @@ function createShaderForModels(gl) {
       setupModel: function (matrix) {
          gl.uniformMatrix3fv(loc_model_matrix, false, matrix);
       },
-      setupCamera: function (matrix) {
+      setupCamera: function (matrix, position) {
          gl.uniformMatrix3fv(loc_camera_matrix, false, matrix);
+         gl.uniform3fv(loc_camera_pos, position);
+      },
+      setupLight: function (position, radius) {
+         gl.uniform3fv(loc_light_pos, position);
+         gl.uniform1f(loc_light_radius, radius);
       }
    };
 }
@@ -248,10 +284,14 @@ function createCamera(canvas, min_width, min_height) {
 //==============================================================================
 
 function createModel(loader, name) {
-   let shape_url    = `../gfx/${name}.js`;
-   let colormap_url = `../gfx/${name}.png`;
+   let shape_url     = `../gfx/${name}.js`;
+   let diffmap_url   = `../gfx/${name}_diff.png`;
+   let specmap_url   = `../gfx/${name}_spec.png`;
+   let normalmap_url = `../gfx/${name}_norm.png`;
    loader.loadShape(shape_url);
-   loader.loadTexture(colormap_url);
+   loader.loadTexture(diffmap_url);
+   loader.loadTexture(specmap_url);
+   loader.loadTexture(normalmap_url);
    return {
       draw: function (shader, position, scale, anim_name, anim_pos) {
          // From model coordinates to world coordinates.
@@ -259,9 +299,11 @@ function createModel(loader, name) {
             Matrix3.translation(position[0], position[1]),
             Matrix3.scale(scale[0], scale[1])
          );
-         // Bind texture and draw the model.
+         // Bind textures and draw the model.
          shader.setupModel(model_matrix);
-         loader.get(colormap_url).bindTo(0);
+         loader.get(diffmap_url).bindTo(0);
+         loader.get(specmap_url).bindTo(1);
+         loader.get(normalmap_url).bindTo(2);
          loader.get(shape_url).draw(shader, anim_name, anim_pos);
       }
    };
@@ -323,12 +365,18 @@ function tick(current_time) {
    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
    gl.enable(gl.BLEND);
-   gl.clearColor(1, 1, 0.5, 1);
+   gl.clearColor(0.1, 0.1, 0.1, 1);
    gl.clear(gl.COLOR_BUFFER_BIT);
 
-   globals.camera.setup([0, 0, 0]);
+   let light = {
+      position: [globals.mousepos[0], globals.mousepos[1], 0.5],
+      radius: 1.5
+   }
+   globals.camera.setup([0, 0, 0.5]);
    globals.shader_model.enable();
-   globals.shader_model.setupCamera(globals.camera.getMatrix());
+   globals.shader_model.setupCamera(globals.camera.getMatrix(), globals.camera.getPosition());
+   globals.shader_model.setupLight(light.position, light.radius);
+
    for (let girl of girls) {
       girl.draw(globals.shader_model);
       girl.update(dt);
@@ -353,6 +401,14 @@ function tick_wait(current_time) {
    }
 }
 
+function mouseEvent(evt) {
+   let rect = globals.canvas.getBoundingClientRect();
+   let x = (evt.clientX - rect.left) / rect.width;
+   let y = (evt.clientY - rect.top) / rect.height;
+   globals.mousepos[0] = (x - 0.5) * globals.camera.getViewWidth()  + globals.camera.getPosition()[0];
+   globals.mousepos[1] = (0.5 - y) * globals.camera.getViewHeight() + globals.camera.getPosition()[1];
+}
+
 window.onload = function () {
    let canvas = document.getElementById('gl');
    let gl = canvas.getContext('webgl');
@@ -363,6 +419,9 @@ window.onload = function () {
       globals.shader_model = createShaderForModels(gl);
       globals.resource_loader = createResourceLoader(gl);
       globals.model = createModel(globals.resource_loader, 'girl');
+      globals.mousepos = [0,0];
+      document.onmousemove = mouseEvent;
+      document.onclick = mouseEvent;
       window.requestAnimationFrame(tick_wait);
    }
 };
