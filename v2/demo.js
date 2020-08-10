@@ -80,23 +80,25 @@ const fragment_shader = `
    uniform float u_light_radius;
    varying vec2  v_texcoord;
    varying vec3  v_position;
+   const float c_ambient = 0.05;
+   const float c_shininess = 32.0;
 
    void main(void) {
       vec4 diff_color = texture2D(u_diffmap, v_texcoord);
       vec4 spec_color = texture2D(u_specmap, v_texcoord);
       vec4 normal_color = texture2D(u_normalmap, v_texcoord);
 
+      vec3 color = c_ambient * diff_color.rgb;
       vec3 normal = normalize(u_model_matrix * (normal_color.rgb * 2.0 - 1.0));
       vec3 camera_dir = normalize(u_camera_position - v_position);
+
       vec3 light_dir = normalize(u_light_position - v_position);
       vec3 reflect_dir = reflect(-light_dir, normal);
-
-      float light_dist = distance(u_light_position, v_position);
-      float light = max(1.0 - (light_dist / u_light_radius), 0.0);
+      float light = max(1.0 - (distance(u_light_position, v_position) / u_light_radius), 0.0);
       float diff = max(dot(normal, light_dir), 0.0);
-      float spec = pow(max(dot(camera_dir, reflect_dir), 0.0), 32.0);
+      float spec = pow(max(dot(camera_dir, reflect_dir), 0.0), c_shininess);
+      color += light * ((diff * diff_color.rgb) + (spec * spec_color.rgb));
 
-      vec3 color = light * ((diff * diff_color.rgb) + (spec * spec_color.rgb));
       gl_FragColor = vec4(color, diff_color.a);
    }
 `;
@@ -365,7 +367,7 @@ function tick(current_time) {
    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
    gl.enable(gl.BLEND);
-   gl.clearColor(0.1, 0.1, 0.1, 1);
+   gl.clearColor(0.05, 0.05, 0.05, 1);
    gl.clear(gl.COLOR_BUFFER_BIT);
 
    let light = {
