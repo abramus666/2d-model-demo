@@ -31,11 +31,7 @@ function buildShaderProgram(gl, vs_source, fs_source) {
       let shader = gl.createShader(type);
       gl.shaderSource(shader, source);
       gl.compileShader(shader);
-      let info = gl.getShaderInfoLog(shader);
-      if (info.length > 0) {
-         console.log(info);
-      }
-      return (gl.getShaderParameter(shader, gl.COMPILE_STATUS) ? shader : null);
+      return shader;
    }
 
    let vs = compileShaderProgram(gl.VERTEX_SHADER, vs_source);
@@ -44,68 +40,105 @@ function buildShaderProgram(gl, vs_source, fs_source) {
    gl.attachShader(prog, vs);
    gl.attachShader(prog, fs);
    gl.linkProgram(prog);
-   let info = gl.getProgramInfoLog(prog);
-   if (info.length > 0) {
-      console.log(info);
+   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      console.log(gl.getProgramInfoLog(prog));
+      console.log(gl.getShaderInfoLog(vs));
+      console.log(gl.getShaderInfoLog(fs));
    }
-   return (gl.getProgramParameter(prog, gl.LINK_STATUS) ? prog : null);
+   return prog;
 }
 
 const vertex_shader = `
    attribute vec2 a_texcoord;
+   attribute vec2 a_tangent1;
+   attribute vec2 a_tangent2;
    attribute vec2 a_position1;
    attribute vec2 a_position2;
    uniform float u_position_delta;
    uniform mat3  u_model_matrix;
    uniform mat3  u_camera_matrix;
    varying vec2  v_texcoord;
+   varying vec3  v_tangent;
    varying vec3  v_position;
 
    void main(void) {
-      vec3 pos = vec3(mix(a_position1, a_position2, u_position_delta), 1.0);
-      v_texcoord = a_texcoord;
-      v_position = vec3((u_model_matrix * pos).xy, 0.0);
-      gl_Position = vec4((u_camera_matrix * u_model_matrix * pos).xy, 0.0, 1.0);
+      vec2 tan_mix = mix(a_tangent1,  a_tangent2,  u_position_delta);
+      vec2 pos_mix = mix(a_position1, a_position2, u_position_delta);
+      vec3 pos     = vec3(pos_mix, 1.0);
+      v_texcoord   = a_texcoord;
+      v_tangent    = vec3(mat2(u_model_matrix) * tan_mix, 0.0);
+      v_position   = vec3((u_model_matrix * pos).xy, 0.0);
+      gl_Position  = vec4((u_camera_matrix * u_model_matrix * pos).xy, 0.0, 1.0);
    }
 `;
 
 const fragment_shader = `
+   #ifdef GL_FRAGMENT_PRECISION_HIGH
    precision highp float;
-   uniform sampler2D u_diffmap;
-   uniform sampler2D u_specmap;
-   uniform sampler2D u_normalmap;
-   uniform mat3  u_model_matrix;
+   #else
+   precision mediump float;
+   #endif
+
+   uniform sampler2D u_diffuse_map;
+   uniform sampler2D u_specular_map;
+   uniform sampler2D u_normal_map;
    uniform vec3  u_camera_position;
    uniform vec3  u_light_position;
    uniform float u_light_radius;
    varying vec2  v_texcoord;
+   varying vec3  v_tangent;
    varying vec3  v_position;
-   const float c_ambient = 0.05;
+   const float c_ambient = 0.1;
    const float c_shininess = 32.0;
 
    void main(void) {
-      vec4 diff_color = texture2D(u_diffmap, v_texcoord);
-      vec4 spec_color = texture2D(u_specmap, v_texcoord);
-      vec4 normal_color = texture2D(u_normalmap, v_texcoord);
+      // Read texels from textures.
+      vec4 diffuse_texel  = texture2D(u_diffuse_map,  v_texcoord);
+      vec4 specular_texel = texture2D(u_specular_map, v_texcoord);
+      vec4 normal_texel   = texture2D(u_normal_map,   v_texcoord);
 
-      vec3 color = c_ambient * diff_color.rgb;
-      vec3 normal = normalize(u_model_matrix * (normal_color.rgb * 2.0 - 1.0));
-      vec3 camera_dir = normalize(u_camera_position - v_position);
+      // Calculate base color from the ambient value and diffuse texel.
+      vec3 color = c_ambient * diffuse_texel.rgb;
 
-      vec3 light_dir = normalize(u_light_position - v_position);
-      vec3 reflect_dir = reflect(-light_dir, normal);
-      float light = max(1.0 - (distance(u_light_position, v_position) / u_light_radius), 0.0);
-      float diff = max(dot(normal, light_dir), 0.0);
-      float spec = pow(max(dot(camera_dir, reflect_dir), 0.0), c_shininess);
-      color += light * ((diff * diff_color.rgb) + (spec * spec_color.rgb));
+      // Calculate TBN matrix to transform from tangent to world space.
+      // Bitangent vector is a cross product of normal and tangent vectors.
+      // "Vertex" normal is constant for 2D geometry.
+      vec3 n = vec3(0.0, 0.0, 1.0);
+      vec3 t = normalize(v_tangent);
+      vec3 b = cross(n, t);
+      mat3 tbn = mat3(t, b, n);
 
-      gl_FragColor = vec4(color, diff_color.a);
+      // Calculate "fragment" normal vector and transform it to world space.
+      vec3 normal = normalize(tbn * (normal_texel.rgb * 2.0 - 1.0));
+
+      // Calculate camera vector.
+      vec3 to_camera = normalize(u_camera_position - v_position);
+
+      // Calculate light vector and reflection vector.
+      vec3 to_light = normalize(u_light_position - v_position);
+      vec3 reflection = reflect(-to_light, normal);
+
+      // Calculate light intersity based on the ratio between light distance and radius.
+      float light_distance = distance(u_light_position, v_position);
+      float light_intensity = max(1.0 - (light_distance / u_light_radius), 0.0);
+
+      // Calculate diffuse and specular scalars.
+      float diffuse = max(dot(normal, to_light), 0.0);
+      float specular = pow(max(dot(to_camera, reflection), 0.0), c_shininess);
+
+      // Add diffuse and specular colors to the final color.
+      color += light_intensity * ((diffuse * diffuse_texel.rgb) + (specular * specular_texel.rgb));
+
+      // Merge final color with the alpha component from diffuse texel.
+      gl_FragColor = vec4(color, diffuse_texel.a);
    }
 `;
 
 function createShaderForModels(gl) {
    let prog = buildShaderProgram(gl, vertex_shader, fragment_shader);
    let loc_texcoord      = gl.getAttribLocation(prog, 'a_texcoord');
+   let loc_tangent1      = gl.getAttribLocation(prog, 'a_tangent1');
+   let loc_tangent2      = gl.getAttribLocation(prog, 'a_tangent2');
    let loc_position1     = gl.getAttribLocation(prog, 'a_position1');
    let loc_position2     = gl.getAttribLocation(prog, 'a_position2');
    let loc_pos_delta     = gl.getUniformLocation(prog, 'u_position_delta');
@@ -114,22 +147,28 @@ function createShaderForModels(gl) {
    let loc_camera_pos    = gl.getUniformLocation(prog, 'u_camera_position');
    let loc_light_pos     = gl.getUniformLocation(prog, 'u_light_position');
    let loc_light_radius  = gl.getUniformLocation(prog, 'u_light_radius');
-   let loc_diffmap       = gl.getUniformLocation(prog, 'u_diffmap');
-   let loc_specmap       = gl.getUniformLocation(prog, 'u_specmap');
-   let loc_normalmap     = gl.getUniformLocation(prog, 'u_normalmap');
+   let loc_diffuse_map   = gl.getUniformLocation(prog, 'u_diffuse_map');
+   let loc_specular_map  = gl.getUniformLocation(prog, 'u_specular_map');
+   let loc_normal_map    = gl.getUniformLocation(prog, 'u_normal_map');
    return {
       enable: function () {
          gl.useProgram(prog);
          gl.enableVertexAttribArray(loc_texcoord);
+         gl.enableVertexAttribArray(loc_tangent1);
+         gl.enableVertexAttribArray(loc_tangent2);
          gl.enableVertexAttribArray(loc_position1);
          gl.enableVertexAttribArray(loc_position2);
-         gl.uniform1i(loc_diffmap, 0);
-         gl.uniform1i(loc_specmap, 1);
-         gl.uniform1i(loc_normalmap, 2);
+         gl.uniform1i(loc_diffuse_map,  0);
+         gl.uniform1i(loc_specular_map, 1);
+         gl.uniform1i(loc_normal_map,   2);
       },
-      setupShape: function (buf_texcoord, buf_position1, buf_position2, position_delta) {
+      setupShape: function (buf_texcoord, buf_tangent1, buf_tangent2, buf_position1, buf_position2, position_delta) {
          gl.bindBuffer(gl.ARRAY_BUFFER, buf_texcoord);
          gl.vertexAttribPointer(loc_texcoord, 2, gl.FLOAT, false, 0, 0);
+         gl.bindBuffer(gl.ARRAY_BUFFER, buf_tangent1);
+         gl.vertexAttribPointer(loc_tangent1, 2, gl.FLOAT, false, 0, 0);
+         gl.bindBuffer(gl.ARRAY_BUFFER, buf_tangent2);
+         gl.vertexAttribPointer(loc_tangent2, 2, gl.FLOAT, false, 0, 0);
          gl.bindBuffer(gl.ARRAY_BUFFER, buf_position1);
          gl.vertexAttribPointer(loc_position1, 2, gl.FLOAT, false, 0, 0);
          gl.bindBuffer(gl.ARRAY_BUFFER, buf_position2);
@@ -152,6 +191,49 @@ function createShaderForModels(gl) {
 
 //==============================================================================
 
+function calculateTangent(vix1, vix2, vix3, vertices, texcoords) {
+   let dx1 = vertices[vix2][0] - vertices[vix1][0];
+   let dy1 = vertices[vix2][1] - vertices[vix1][1];
+   let dx2 = vertices[vix3][0] - vertices[vix1][0];
+   let dy2 = vertices[vix3][1] - vertices[vix1][1];
+   let du1 = texcoords[vix2][0] - texcoords[vix1][0];
+   let dv1 = texcoords[vix2][1] - texcoords[vix1][1];
+   let du2 = texcoords[vix3][0] - texcoords[vix1][0];
+   let dv2 = texcoords[vix3][1] - texcoords[vix1][1];
+   let f = 1.0 / (du1 * dv2 - du2 * dv1);
+   let tx = f * (dv2 * dx1 - dv1 * dx2);
+   let ty = f * (dv2 * dy1 - dv1 * dy2);
+   return [tx, ty];
+}
+
+function calculateTangents(polygons, vertices, texcoords) {
+   let tangents = vertices.map(function (v) {return [0,0,0];});
+   let triangles = polygons.flat();
+   // Calculate tangent vectors for all triangles. Tangent vector for a vertex
+   // is an average of tangent vectors for all triangles this vectex belongs to.
+   for (let i = 0; i < triangles.length; i += 3) {
+      let vix1 = triangles[i];
+      let vix2 = triangles[i+1];
+      let vix3 = triangles[i+2];
+      let t = calculateTangent(vix1, vix2, vix3, vertices, texcoords);
+      for (let vix of [vix1, vix2, vix3]) {
+         tangents[vix][0] += t[0];
+         tangents[vix][1] += t[1];
+         tangents[vix][2] += 1; // Keeps the count of tangent vectors to be averaged.
+      }
+   }
+   for (let vix = 0; vix < tangents.length; vix++) {
+      let tx = 0;
+      let ty = 0;
+      if (tangents[vix][2] > 0) {
+         tx = tangents[vix][0] / tangents[vix][2];
+         ty = tangents[vix][1] / tangents[vix][2];
+      }
+      tangents[vix] = [tx, ty];
+   }
+   return tangents;
+}
+
 function createArrayBuffer(gl, array) {
    let arr = array.flat();
    let buf = {id: gl.createBuffer(), len: arr.length};
@@ -169,11 +251,17 @@ function createElementArrayBuffer(gl, array) {
 }
 
 function createShape(gl, shape_data) {
+   let polygons = shape_data['polygons'];
+   let texcoords = shape_data['texcoords'];
    let animations = shape_data['vertices'];
-   let index_buffer = createElementArrayBuffer(gl, shape_data['polygons']);
-   let texcoord_buffer = createArrayBuffer(gl, shape_data['texcoords']);
+   let index_buffer = createElementArrayBuffer(gl, polygons);
+   let texcoord_buffer = createArrayBuffer(gl, texcoords);
+   let tangent_buffers = {};
    let vertex_buffers = {};
    for (let anim_name in animations) {
+      tangent_buffers[anim_name] = animations[anim_name].map(function (frame) {
+         return createArrayBuffer(gl, calculateTangents(polygons, frame, texcoords));
+      });
       vertex_buffers[anim_name] = animations[anim_name].map(function (frame) {
          return createArrayBuffer(gl, frame);
       });
@@ -182,12 +270,13 @@ function createShape(gl, shape_data) {
       draw: function (shader, anim_name, anim_pos) {
          if (anim_pos < 0.0) anim_pos = 0.0;
          if (anim_pos > 1.0) anim_pos = 1.0;
-         let verts = vertex_buffers[anim_name];
-         let n = anim_pos * (verts.length-1);
+         let tangents = tangent_buffers[anim_name];
+         let vertices = vertex_buffers[anim_name];
+         let n = anim_pos * (vertices.length-1);
          let i1 = Math.trunc(n);
-         let i2 = (i1 + 1) % verts.length;
+         let i2 = (i1 + 1) % vertices.length;
          let delta = n - i1;
-         shader.setupShape(texcoord_buffer.id, verts[i1].id, verts[i2].id, delta);
+         shader.setupShape(texcoord_buffer.id, tangents[i1].id, tangents[i2].id, vertices[i1].id, vertices[i2].id, delta);
          gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, index_buffer.id);
          gl.drawElements(gl.TRIANGLES, index_buffer.len, gl.UNSIGNED_SHORT, 0);
       }
@@ -286,14 +375,14 @@ function createCamera(canvas, min_width, min_height) {
 //==============================================================================
 
 function createModel(loader, name) {
-   let shape_url     = `../gfx/${name}.js`;
-   let diffmap_url   = `../gfx/${name}_diff.png`;
-   let specmap_url   = `../gfx/${name}_spec.png`;
-   let normalmap_url = `../gfx/${name}_norm.png`;
+   let shape_url    = `../gfx/${name}.js`;
+   let diff_map_url = `../gfx/${name}_diff.png`;
+   let spec_map_url = `../gfx/${name}_spec.png`;
+   let norm_map_url = `../gfx/${name}_norm.png`;
    loader.loadShape(shape_url);
-   loader.loadTexture(diffmap_url);
-   loader.loadTexture(specmap_url);
-   loader.loadTexture(normalmap_url);
+   loader.loadTexture(diff_map_url);
+   loader.loadTexture(spec_map_url);
+   loader.loadTexture(norm_map_url);
    return {
       draw: function (shader, position, scale, anim_name, anim_pos) {
          // From model coordinates to world coordinates.
@@ -303,9 +392,9 @@ function createModel(loader, name) {
          );
          // Bind textures and draw the model.
          shader.setupModel(model_matrix);
-         loader.get(diffmap_url).bindTo(0);
-         loader.get(specmap_url).bindTo(1);
-         loader.get(normalmap_url).bindTo(2);
+         loader.get(diff_map_url).bindTo(0);
+         loader.get(spec_map_url).bindTo(1);
+         loader.get(norm_map_url).bindTo(2);
          loader.get(shape_url).draw(shader, anim_name, anim_pos);
       }
    };
@@ -367,7 +456,7 @@ function tick(current_time) {
    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
    gl.enable(gl.BLEND);
-   gl.clearColor(0.05, 0.05, 0.05, 1);
+   gl.clearColor(0.1, 0.1, 0.1, 1);
    gl.clear(gl.COLOR_BUFFER_BIT);
 
    let light = {
