@@ -31,11 +31,7 @@ function buildShaderProgram(gl, vs_source, fs_source) {
       let shader = gl.createShader(type);
       gl.shaderSource(shader, source);
       gl.compileShader(shader);
-      let info = gl.getShaderInfoLog(shader);
-      if (info.length > 0) {
-         console.log(info);
-      }
-      return (gl.getShaderParameter(shader, gl.COMPILE_STATUS) ? shader : null);
+      return shader;
    }
 
    let vs = compileShaderProgram(gl.VERTEX_SHADER, vs_source);
@@ -44,11 +40,12 @@ function buildShaderProgram(gl, vs_source, fs_source) {
    gl.attachShader(prog, vs);
    gl.attachShader(prog, fs);
    gl.linkProgram(prog);
-   let info = gl.getProgramInfoLog(prog);
-   if (info.length > 0) {
-      console.log(info);
+   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      console.log(gl.getProgramInfoLog(prog));
+      console.log(gl.getShaderInfoLog(vs));
+      console.log(gl.getShaderInfoLog(fs));
    }
-   return (gl.getProgramParameter(prog, gl.LINK_STATUS) ? prog : null);
+   return prog;
 }
 
 const vertex_shader = `
@@ -144,12 +141,12 @@ function createShape(gl, shape_data) {
       draw: function (shader, anim_name, anim_pos) {
          if (anim_pos < 0.0) anim_pos = 0.0;
          if (anim_pos > 1.0) anim_pos = 1.0;
-         let verts = vertex_buffers[anim_name];
-         let n = anim_pos * (verts.length-1);
+         let vertices = vertex_buffers[anim_name];
+         let n = anim_pos * (vertices.length-1);
          let i1 = Math.trunc(n);
-         let i2 = (i1 + 1) % verts.length;
+         let i2 = (i1 + 1) % vertices.length;
          let delta = n - i1;
-         shader.setupShape(texcoord_buffer.id, verts[i1].id, verts[i2].id, delta);
+         shader.setupShape(texcoord_buffer.id, vertices[i1].id, vertices[i2].id, delta);
          gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, index_buffer.id);
          gl.drawElements(gl.TRIANGLES, index_buffer.len, gl.UNSIGNED_SHORT, 0);
       }
