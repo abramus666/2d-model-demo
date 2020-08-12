@@ -1,5 +1,16 @@
 
 let Matrix3 = {
+   // 3x3 matrices are sufficient for 2D transformations. Column-major order
+   // is used, therefore rows in the matrices below are actually columns.
+   rotation: function (angle) {
+      let c = Math.cos(angle);
+      let s = Math.sin(angle);
+      return [
+         c,-s, 0,
+         s, c, 0,
+         0, 0, 1
+      ];
+   },
    scale: function (x, y) {
       return [
          x, 0, 0,
@@ -58,9 +69,16 @@ const vertex_shader = `
    varying vec2  v_texcoord;
 
    void main(void) {
-      vec3 pos = vec3(mix(a_position1, a_position2, u_position_delta), 1.0);
+      // Perform linear interpolation based on animation position.
+      vec3 position = vec3(mix(a_position1, a_position2, u_position_delta), 1.0);
+
+      // Pass texture coordinates to the fragment shader.
       v_texcoord = a_texcoord;
-      gl_Position = vec4((u_camera_matrix * u_model_matrix * pos).xy, 0.0, 1.0);
+
+      // Calculate the position in camera space.
+      // Z=1 for multiplication by matrix since those are 2D transformations.
+      // Z=0, W=1 in the final value.
+      gl_Position = vec4((u_camera_matrix * u_model_matrix * position).xy, 0.0, 1.0);
    }
 `;
 
@@ -273,7 +291,7 @@ function createGirl(camera, model, size, direction) {
    const anim_name = 'walk';
    const anim_time = 1.5;
    const dx = (direction * size * 0.9) / anim_time;
-   const scale = [-direction * size, -size];
+   const scale = [-direction * size, size];
    let position = [-direction * xLimit(), -size * 0.5];
    let anim_pos = 0;
 
