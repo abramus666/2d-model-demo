@@ -117,14 +117,15 @@ const fragment_shader = `
    uniform sampler2D u_normal_map;
    uniform vec3  u_camera_position;
    uniform vec3  u_light_position;
-   uniform float u_light_radius;
+   uniform float u_light_attenuation;
    varying vec2  v_texcoord;
    varying vec3  v_tangent;
    varying vec3  v_bitangent;
    varying vec3  v_normal;
    varying vec3  v_position;
-   const float c_ambient = 0.1;
-   const float c_shininess = 32.0;
+   const float c_gamma = 2.2;
+   const float c_ambient = 0.005;
+   const float c_shininess = 64.0;
 
    void main(void) {
       // Read texels from textures.
@@ -132,8 +133,12 @@ const fragment_shader = `
       vec4 specular_texel = texture2D(u_specular_map, v_texcoord);
       vec4 normal_texel   = texture2D(u_normal_map,   v_texcoord);
 
+      // Convert diffuse texel to linear color space.
+      vec3 diffuse_color = pow(diffuse_texel.rgb, vec3(c_gamma));
+      vec3 specular_color = specular_texel.rgb;
+
       // Calculate base color from the ambient value and diffuse texel.
-      vec3 color = c_ambient * diffuse_texel.rgb;
+      vec3 color = c_ambient * diffuse_color;
 
       // Construct TBN matrix to transform from tangent to world space.
       vec3 t = normalize(v_tangent);
@@ -147,20 +152,23 @@ const fragment_shader = `
       // Calculate camera vector.
       vec3 to_camera = normalize(u_camera_position - v_position);
 
-      // Calculate light vector and reflection vector.
+      // Calculate light vector and "halfway" vector between light and camera vectors.
       vec3 to_light = normalize(u_light_position - v_position);
-      vec3 reflection = reflect(-to_light, normal);
+      vec3 halfway = normalize(to_light + to_camera);
 
-      // Calculate light intersity based on the ratio between light distance and radius.
-      float light_distance = distance(u_light_position, v_position);
-      float light_intensity = max(1.0 - (light_distance / u_light_radius), 0.0);
+      // Calculate luminosity based on the light distance and its attenuation.
+      float distance = length(u_light_position - v_position);
+      float luminosity = 1.0 / (1.0 + u_light_attenuation * distance);
 
       // Calculate diffuse and specular scalars.
       float diffuse = max(dot(normal, to_light), 0.0);
-      float specular = pow(max(dot(to_camera, reflection), 0.0), c_shininess);
+      float specular = pow(max(dot(normal, halfway), 0.0), c_shininess);
 
       // Add diffuse and specular colors to the final color.
-      color += light_intensity * ((diffuse * diffuse_texel.rgb) + (specular * specular_texel.rgb));
+      color += luminosity * ((diffuse * diffuse_color) + (specular * specular_color));
+
+      // Apply gamma correction to the final color.
+      color = pow(color, vec3(1.0 / c_gamma));
 
       // Merge final color with the alpha component from diffuse texel.
       gl_FragColor = vec4(color, diffuse_texel.a);
@@ -179,7 +187,7 @@ function createShaderForModels(gl) {
    let loc_camera_matrix = gl.getUniformLocation(prog, 'u_camera_matrix');
    let loc_camera_pos    = gl.getUniformLocation(prog, 'u_camera_position');
    let loc_light_pos     = gl.getUniformLocation(prog, 'u_light_position');
-   let loc_light_radius  = gl.getUniformLocation(prog, 'u_light_radius');
+   let loc_light_att     = gl.getUniformLocation(prog, 'u_light_attenuation');
    let loc_diffuse_map   = gl.getUniformLocation(prog, 'u_diffuse_map');
    let loc_specular_map  = gl.getUniformLocation(prog, 'u_specular_map');
    let loc_normal_map    = gl.getUniformLocation(prog, 'u_normal_map');
@@ -215,9 +223,9 @@ function createShaderForModels(gl) {
          gl.uniformMatrix3fv(loc_camera_matrix, false, matrix);
          gl.uniform3fv(loc_camera_pos, position);
       },
-      setupLight: function (position, radius) {
+      setupLight: function (position, attenuation) {
          gl.uniform3fv(loc_light_pos, position);
-         gl.uniform1f(loc_light_radius, radius);
+         gl.uniform1f(loc_light_att, attenuation);
       }
    };
 }
@@ -494,12 +502,12 @@ function tick(current_time) {
 
    let light = {
       position: [globals.mousepos[0], globals.mousepos[1], 0.5],
-      radius: 1.5
+      attenuation: 2
    }
    globals.camera.setup([0, 0, 0.5]);
    globals.shader_model.enable();
    globals.shader_model.setupCamera(globals.camera.getMatrix(), globals.camera.getPosition());
-   globals.shader_model.setupLight(light.position, light.radius);
+   globals.shader_model.setupLight(light.position, light.attenuation);
 
    for (let girl of girls) {
       girl.draw(globals.shader_model);
