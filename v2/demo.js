@@ -133,12 +133,8 @@ const fragment_shader = `
       vec4 specular_texel = texture2D(u_specular_map, v_texcoord);
       vec4 normal_texel   = texture2D(u_normal_map,   v_texcoord);
 
-      // Convert diffuse texel to linear color space.
-      vec3 diffuse_color = pow(diffuse_texel.rgb, vec3(c_gamma));
-      vec3 specular_color = specular_texel.rgb;
-
       // Calculate base color from the ambient value and diffuse texel.
-      vec3 color = c_ambient * diffuse_color;
+      vec3 color = c_ambient * diffuse_texel.rgb;
 
       // Construct TBN matrix to transform from tangent to world space.
       vec3 t = normalize(v_tangent);
@@ -165,7 +161,7 @@ const fragment_shader = `
       float specular = pow(max(dot(normal, halfway), 0.0), c_shininess);
 
       // Add diffuse and specular colors to the final color.
-      color += luminosity * ((diffuse * diffuse_color) + (specular * specular_color));
+      color += luminosity * ((diffuse * diffuse_texel.rgb) + (specular * specular_texel.rgb));
 
       // Apply gamma correction to the final color.
       color = pow(color, vec3(1.0 / c_gamma));
@@ -326,14 +322,38 @@ function createShape(gl, shape_data) {
 
 //==============================================================================
 
-function createTexture(gl, image) {
+function convertImageToLinearColorSpace(image, gamma) {
+   let canvas = document.createElement('canvas');
+   let context = canvas.getContext('2d');
+   canvas.width = image.width;
+   canvas.height = image.height;
+   context.drawImage(image, 0, 0);
+   let img = context.getImageData(0, 0, image.width, image.height);
+   let pixels = new Uint8Array(img.data.length);
+   for (let i = 0; i < img.data.length; i++) {
+      // Don't touch alpha value.
+      if ((i % 4) != 3) {
+         pixels[i] = Math.pow((img.data[i] / 255.0), gamma) * 255.0;
+      } else {
+         pixels[i] = img.data[i];
+      }
+   }
+   return pixels;
+}
+
+function createTexture(gl, image, sRBGtoLinear) {
    let texture = gl.createTexture();
    gl.bindTexture(gl.TEXTURE_2D, texture);
    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+   if (sRBGtoLinear) {
+      let pixels = convertImageToLinearColorSpace(image, 2.2);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, image.width, image.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+   } else {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+   }
    return {
       bindTo: function (index) {
          gl.activeTexture(gl.TEXTURE0 + index);
@@ -362,12 +382,12 @@ function createResourceLoader(gl) {
       }
    }
 
-   function loadImage(url) {
+   function loadImage(url, sRBGtoLinear) {
       if (!(url in resources)) {
          num_pending += 1;
          let image = new Image();
          image.onload = function () {
-            resources[url] = createTexture(gl, image);
+            resources[url] = createTexture(gl, image, sRBGtoLinear);
             num_pending -= 1;
          };
          image.src = url;
@@ -375,10 +395,18 @@ function createResourceLoader(gl) {
    }
 
    return {
-      loadShape:   function (url) {loadScript(url, 'shape_', createShape);},
-      loadTexture: function (url) {loadImage(url);},
-      get:         function (url) {return resources[url];},
-      completed:   function () {return (num_pending == 0);}
+      loadShape: function (url) {
+         loadScript(url, 'shape_', createShape);
+      },
+      loadTexture: function (url, sRBGtoLinear = false) {
+         loadImage(url, sRBGtoLinear);
+      },
+      get: function (url) {
+         return resources[url];
+      },
+      completed: function () {
+         return (num_pending == 0);
+      }
    };
 }
 
@@ -421,7 +449,7 @@ function createModel(loader, name) {
    let spec_map_url = `../gfx/${name}_spec.png`;
    let norm_map_url = `../gfx/${name}_norm.png`;
    loader.loadShape(shape_url);
-   loader.loadTexture(diff_map_url);
+   loader.loadTexture(diff_map_url, true);
    loader.loadTexture(spec_map_url);
    loader.loadTexture(norm_map_url);
    return {
