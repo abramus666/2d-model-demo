@@ -154,7 +154,7 @@ const fragment_shader = `
 
       // Calculate luminosity based on the light distance and its attenuation.
       float distance = length(u_light_position - v_position);
-      float luminosity = 1.0 / (1.0 + u_light_attenuation * distance);
+      float luminosity = 1.0 / (1.0 + u_light_attenuation * distance * distance);
 
       // Calculate diffuse and specular scalars.
       float diffuse = max(dot(normal, to_light), 0.0);
@@ -341,14 +341,14 @@ function convertImageToLinearColorSpace(image, gamma) {
    return pixels;
 }
 
-function createTexture(gl, image, sRBGtoLinear) {
+function createTexture(gl, image, srbg_to_linear) {
    let texture = gl.createTexture();
    gl.bindTexture(gl.TEXTURE_2D, texture);
    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-   if (sRBGtoLinear) {
+   if (srbg_to_linear) {
       let pixels = convertImageToLinearColorSpace(image, 2.2);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, image.width, image.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
    } else {
@@ -382,12 +382,12 @@ function createResourceLoader(gl) {
       }
    }
 
-   function loadImage(url, sRBGtoLinear) {
+   function loadImage(url, srbg_to_linear) {
       if (!(url in resources)) {
          num_pending += 1;
          let image = new Image();
          image.onload = function () {
-            resources[url] = createTexture(gl, image, sRBGtoLinear);
+            resources[url] = createTexture(gl, image, srbg_to_linear);
             num_pending -= 1;
          };
          image.src = url;
@@ -398,8 +398,8 @@ function createResourceLoader(gl) {
       loadShape: function (url) {
          loadScript(url, 'shape_', createShape);
       },
-      loadTexture: function (url, sRBGtoLinear = false) {
-         loadImage(url, sRBGtoLinear);
+      loadTexture: function (url, srbg_to_linear = false) {
+         loadImage(url, srbg_to_linear);
       },
       get: function (url) {
          return resources[url];
@@ -529,10 +529,10 @@ function tick(current_time) {
    gl.clear(gl.COLOR_BUFFER_BIT);
 
    let light = {
-      position: [globals.mousepos[0], globals.mousepos[1], 0.5],
-      attenuation: 2
+      position: [globals.mousepos[0], globals.mousepos[1], 0.25],
+      attenuation: 5
    }
-   globals.camera.setup([0, 0, 0.5]);
+   globals.camera.setup([0, 0, 1]);
    globals.shader_model.enable();
    globals.shader_model.setupCamera(globals.camera.getMatrix(), globals.camera.getPosition());
    globals.shader_model.setupLight(light.position, light.attenuation);
