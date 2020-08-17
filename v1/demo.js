@@ -145,10 +145,10 @@ function createElementArrayBuffer(gl, array) {
    return buf;
 }
 
-function createShape(gl, shape_data) {
-   let animations = shape_data['vertices'];
-   let index_buffer = createElementArrayBuffer(gl, shape_data['polygons']);
-   let texcoord_buffer = createArrayBuffer(gl, shape_data['texcoords']);
+function createShape(gl, json) {
+   let animations = json['vertices'];
+   let index_buffer = createElementArrayBuffer(gl, json['polygons']);
+   let texcoord_buffer = createArrayBuffer(gl, json['texcoords']);
    let vertex_buffers = {};
    for (let anim_name in animations) {
       vertex_buffers[anim_name] = animations[anim_name].map(function (frame) {
@@ -195,26 +195,26 @@ function createResourceLoader(gl) {
    let resources = {};
    let num_pending = 0;
 
-   function loadScript(url, name_prefix, create_func) {
+   function loadJson(url, create_func) {
       if (!(url in resources)) {
          num_pending += 1;
-         let name = name_prefix + (/(\w+)\.js/).exec(url)[1];
-         let script = document.createElement('script');
-         script.onload = function () {
-            resources[url] = create_func(gl, eval(name));
+         let request = new XMLHttpRequest();
+         request.onload = function () {
+            resources[url] = create_func(request.response);
             num_pending -= 1;
          };
-         script.src = url;
-         document.head.appendChild(script);
+         request.open('GET', url);
+         request.responseType = 'json';
+         request.send();
       }
    }
 
-   function loadImage(url) {
+   function loadImage(url, create_func) {
       if (!(url in resources)) {
          num_pending += 1;
          let image = new Image();
          image.onload = function () {
-            resources[url] = createTexture(gl, image);
+            resources[url] = create_func(image);
             num_pending -= 1;
          };
          image.src = url;
@@ -222,16 +222,45 @@ function createResourceLoader(gl) {
    }
 
    return {
-      loadShape:   function (url) {loadScript(url, 'shape_', createShape);},
-      loadTexture: function (url) {loadImage(url);},
-      get:         function (url) {return resources[url];},
-      completed:   function () {return (num_pending == 0);}
+      loadShape: function (url) {
+         loadJson(url, function (json) {
+            return createShape(gl, json);
+         });
+      },
+      loadTexture: function (url) {
+         loadImage(url, function (image) {
+            return createTexture(gl, image);
+         });
+      },
+      get: function (url) {
+         return resources[url];
+      },
+      completed: function () {
+         return (num_pending == 0);
+      }
    };
 }
 
 //==============================================================================
 
-function createCamera(canvas, min_width, min_height) {
+function createCanvasAgent(gl, canvas) {
+   return {
+      getAspectRatio: function () {
+         return (canvas.clientWidth / canvas.clientHeight);
+      },
+      handleResize: function () {
+         let cw = canvas.clientWidth;
+         let ch = canvas.clientHeight;
+         if ((canvas.width != cw) || (canvas.height != ch)) {
+            canvas.width  = cw;
+            canvas.height = ch;
+            gl.viewport(0, 0, cw, ch);
+         }
+      }
+   };
+}
+
+function createCamera(canvas_agent, min_width, min_height) {
    let position    = [0,0,0];
    let matrix      = null;
    let view_width  = null;
@@ -242,14 +271,14 @@ function createCamera(canvas, min_width, min_height) {
       getViewWidth:  function () {return view_width;},
       getViewHeight: function () {return view_height;},
 
-      setup: function (pos) {
-         let canvas_ratio = (canvas.clientWidth / canvas.clientHeight);
-         if ((min_width / min_height) < canvas_ratio) {
-            view_width  = min_height * canvas_ratio;
+      setPosition: function (pos) {
+         let ratio = canvas_agent.getAspectRatio();
+         if ((min_width / min_height) < ratio) {
+            view_width  = min_height * ratio;
             view_height = min_height;
          } else {
             view_width  = min_width;
-            view_height = min_width / canvas_ratio;
+            view_height = min_width / ratio;
          }
          matrix = Matrix3.multiply(
             Matrix3.scale(2.0 / view_width, 2.0 / view_height),
@@ -263,7 +292,7 @@ function createCamera(canvas, min_width, min_height) {
 //==============================================================================
 
 function createModel(loader, name) {
-   let shape_url    = `../gfx/${name}.js`;
+   let shape_url    = `../gfx/${name}.json`;
    let colormap_url = `../gfx/${name}.png`;
    loader.loadShape(shape_url);
    loader.loadTexture(colormap_url);
@@ -317,52 +346,51 @@ function createGirl(camera, model, size, direction) {
 
 //==============================================================================
 
-const GIRL_MAX_COUNT = 100;
 const GIRL_APPEAR_DELAY = 1.0;
 
 let globals = {};
 let girls = [];
 let delay = 0;
 
-function tick(current_time) {
-   let dt = 1.0 / 60.0;
-
-   let cw = globals.canvas.clientWidth;
-   let ch = globals.canvas.clientHeight;
-   if ((globals.canvas.width != cw) || (globals.canvas.height != ch)) {
-      globals.canvas.width  = cw;
-      globals.canvas.height = ch;
+function tick(timestamp) {
+   const t = timestamp / 1000.0;
+   const dt = 1.0 / 60.0;
+   while (globals.time + dt <= t) {
+      globals.time += dt;
+      for (let girl of girls) {
+         girl.update(dt);
+      }
+      girls = girls.filter(function (girl) {return !girl.isGone();});
+      delay -= dt;
+      if (delay <= 0) {
+         let size = Math.pow(2, Math.random() * 2 + 1) / 4; // 0.5 - 2.0
+         let direction = (Math.random() > 0.5) ? 1 : -1;
+         girls.push(createGirl(globals.camera, globals.model, size, direction));
+         girls.sort(function (a, b) {return a.getSize() - b.getSize();});
+         delay = GIRL_APPEAR_DELAY;
+      }
    }
 
    let gl = globals.glcontext;
-   gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+   globals.canvas_agent.handleResize();
    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
    gl.enable(gl.BLEND);
    gl.clearColor(1, 1, 0.5, 1);
    gl.clear(gl.COLOR_BUFFER_BIT);
 
-   globals.camera.setup([0, 0, 0]);
+   globals.camera.setPosition([0, 0, 1]);
    globals.shader_model.enable();
    globals.shader_model.setupCamera(globals.camera.getMatrix());
    for (let girl of girls) {
       girl.draw(globals.shader_model);
-      girl.update(dt);
-   }
-   girls = girls.filter(function (girl) {return !girl.isGone();});
-   delay -= dt;
-   if (delay <= 0 && girls.length < GIRL_MAX_COUNT) {
-      let size = Math.pow(2, Math.random() * 3 + 1) / 8; // 0.25 - 2.0
-      let direction = (Math.random() > 0.5) ? 1 : -1;
-      girls.push(createGirl(globals.camera, globals.model, size, direction));
-      girls.sort(function (a, b) {return a.getSize() - b.getSize();});
-      delay = GIRL_APPEAR_DELAY;
    }
    window.requestAnimationFrame(tick);
 }
 
-function tick_wait(current_time) {
+function tick_wait(timestamp) {
+   globals.time = timestamp / 1000.0;
    if (globals.resource_loader.completed()) {
-      tick(current_time);
+      tick(timestamp);
    } else {
       window.requestAnimationFrame(tick_wait);
    }
@@ -373,10 +401,10 @@ window.onload = function () {
    let gl = canvas.getContext('webgl');
    if (gl) {
       globals.glcontext = gl;
-      globals.canvas = canvas;
-      globals.camera = createCamera(canvas, 1, 1);
       globals.shader_model = createShaderForModels(gl);
       globals.resource_loader = createResourceLoader(gl);
+      globals.canvas_agent = createCanvasAgent(gl, canvas);
+      globals.camera = createCamera(globals.canvas_agent, 1, 1);
       globals.model = createModel(globals.resource_loader, 'girl');
       window.requestAnimationFrame(tick_wait);
    }
