@@ -52,9 +52,18 @@ function buildShaderProgram(gl, vs_source, fs_source) {
    gl.attachShader(prog, fs);
    gl.linkProgram(prog);
    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-      console.log(gl.getProgramInfoLog(prog));
-      console.log(gl.getShaderInfoLog(vs));
-      console.log(gl.getShaderInfoLog(fs));
+      let vs_info = gl.getShaderInfoLog(vs);
+      if (vs_info.length > 0) {
+         console.error(vs_info);
+      }
+      let fs_info = gl.getShaderInfoLog(fs);
+      if (fs_info.length > 0) {
+         console.error(fs_info);
+      }
+      let prog_info = gl.getProgramInfoLog(prog);
+      if (prog_info.length > 0) {
+         console.error(prog_info);
+      }
    }
    return prog;
 }
@@ -118,12 +127,12 @@ const fragment_shader = `
    uniform vec3  u_camera_position;
    uniform vec3  u_light_position;
    uniform float u_light_attenuation;
+   uniform float u_gamma;
    varying vec2  v_texcoord;
    varying vec3  v_tangent;
    varying vec3  v_bitangent;
    varying vec3  v_normal;
    varying vec3  v_position;
-   const float c_gamma = 2.2;
    const float c_ambient = 0.005;
    const float c_shininess = 64.0;
 
@@ -164,7 +173,7 @@ const fragment_shader = `
       color += luminosity * ((diffuse * diffuse_texel.rgb) + (specular * specular_texel.rgb));
 
       // Apply gamma correction to the final color.
-      color = pow(color, vec3(1.0 / c_gamma));
+      color = pow(color, vec3(1.0 / u_gamma));
 
       // Merge final color with the alpha component from diffuse texel.
       gl_FragColor = vec4(color, diffuse_texel.a);
@@ -184,6 +193,7 @@ function createShaderForModels(gl) {
    let loc_camera_pos    = gl.getUniformLocation(prog, 'u_camera_position');
    let loc_light_pos     = gl.getUniformLocation(prog, 'u_light_position');
    let loc_light_att     = gl.getUniformLocation(prog, 'u_light_attenuation');
+   let loc_gamma         = gl.getUniformLocation(prog, 'u_gamma');
    let loc_diffuse_map   = gl.getUniformLocation(prog, 'u_diffuse_map');
    let loc_specular_map  = gl.getUniformLocation(prog, 'u_specular_map');
    let loc_normal_map    = gl.getUniformLocation(prog, 'u_normal_map');
@@ -222,6 +232,9 @@ function createShaderForModels(gl) {
       setupLight: function (position, attenuation) {
          gl.uniform3fv(loc_light_pos, position);
          gl.uniform1f(loc_light_att, attenuation);
+      },
+      setupGamma: function (gamma) {
+         gl.uniform1f(loc_gamma, gamma);
       }
    };
 }
@@ -322,7 +335,7 @@ function createShape(gl, json) {
 
 //==============================================================================
 
-function convertImageToLinearColorSpace(image, gamma) {
+function linearizeImage(image) {
    let canvas = document.createElement('canvas');
    let context = canvas.getContext('2d');
    canvas.width = image.width;
@@ -331,9 +344,16 @@ function convertImageToLinearColorSpace(image, gamma) {
    let img = context.getImageData(0, 0, image.width, image.height);
    let pixels = new Uint8Array(img.data.length);
    for (let i = 0; i < img.data.length; i++) {
-      // Don't touch alpha value.
+      // Don't touch the alpha component.
       if ((i % 4) != 3) {
-         pixels[i] = Math.pow((img.data[i] / 255.0), gamma) * 255.0;
+         // Linearize according to the sRGB standard.
+         let c = img.data[i] / 255.0;
+         if (c <= 0.04045) {
+            c = c / 12.92;
+         } else {
+            c = Math.pow(((c + 0.055) / 1.055), 2.4);
+         }
+         pixels[i] = Math.round(c * 255.0);
       } else {
          pixels[i] = img.data[i];
       }
@@ -349,8 +369,14 @@ function createTexture(gl, image, srgb_to_linear) {
    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
    if (srgb_to_linear) {
-      let pixels = convertImageToLinearColorSpace(image, 2.2);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, image.width, image.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      // Using extension is preferable because storing linearized
+      // colors with 8-bit resolution will cause loss of information.
+      let ext = gl.getExtension('EXT_sRGB');
+      if (ext) {
+         gl.texImage2D(gl.TEXTURE_2D, 0, ext.SRGB_ALPHA_EXT, ext.SRGB_ALPHA_EXT, gl.UNSIGNED_BYTE, image);
+      } else {
+         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, image.width, image.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, linearizeImage(image));
+      }
    } else {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
    }
@@ -559,10 +585,11 @@ function tick(timestamp) {
    }
 
    let gl = globals.glcontext;
+   let cc = Math.pow(0.005, (1.0 / globals.gamma));
    globals.canvas_agent.handleResize();
    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
    gl.enable(gl.BLEND);
-   gl.clearColor(0.1, 0.1, 0.1, 1);
+   gl.clearColor(cc, cc, cc, 1);
    gl.clear(gl.COLOR_BUFFER_BIT);
 
    let light = {
@@ -573,6 +600,7 @@ function tick(timestamp) {
    globals.shader_model.enable();
    globals.shader_model.setupCamera(globals.camera.getMatrix(), globals.camera.getPosition());
    globals.shader_model.setupLight(light.position, light.attenuation);
+   globals.shader_model.setupGamma(globals.gamma);
    for (let girl of girls) {
       girl.draw(globals.shader_model);
    }
@@ -594,6 +622,15 @@ function mouseEvent(evt) {
    globals.mousepos[1] = coords[1] * globals.camera.getViewHeight() + globals.camera.getPosition()[1];
 }
 
+function mouseWheel(evt) {
+   if (evt.deltaY < 0) {
+      globals.gamma = Math.max(globals.gamma - 0.1, 1.8);
+   }
+   if (evt.deltaY > 0) {
+      globals.gamma = Math.min(globals.gamma + 0.1, 2.6);
+   }
+}
+
 window.onload = function () {
    let canvas = document.getElementById('gl');
    let gl = canvas.getContext('webgl');
@@ -604,9 +641,13 @@ window.onload = function () {
       globals.canvas_agent = createCanvasAgent(gl, canvas);
       globals.camera = createCamera(globals.canvas_agent, 1, 1);
       globals.model = createModel(globals.resource_loader, 'girl');
+      globals.gamma = 2.2;
       globals.mousepos = [0,0];
       document.onmousemove = mouseEvent;
       document.onclick = mouseEvent;
+      document.onwheel = mouseWheel;
       window.requestAnimationFrame(tick_wait);
+   } else {
+      console.error('WebGL not supported');
    }
 };
