@@ -52,9 +52,18 @@ function buildShaderProgram(gl, vs_source, fs_source) {
    gl.attachShader(prog, fs);
    gl.linkProgram(prog);
    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-      console.log(gl.getProgramInfoLog(prog));
-      console.log(gl.getShaderInfoLog(vs));
-      console.log(gl.getShaderInfoLog(fs));
+      let vs_info = gl.getShaderInfoLog(vs);
+      if (vs_info.length > 0) {
+         console.error(vs_info);
+      }
+      let fs_info = gl.getShaderInfoLog(fs);
+      if (fs_info.length > 0) {
+         console.error(fs_info);
+      }
+      let prog_info = gl.getProgramInfoLog(prog);
+      if (prog_info.length > 0) {
+         console.error(prog_info);
+      }
    }
    return prog;
 }
@@ -407,5 +416,7 @@ window.onload = function () {
       globals.camera = createCamera(globals.canvas_agent, 1, 1);
       globals.model = createModel(globals.resource_loader, 'girl');
       window.requestAnimationFrame(tick_wait);
+   } else {
+      console.error('WebGL not supported');
    }
 };
