@@ -542,8 +542,8 @@ let delay = 0;
 function tick(timestamp) {
    const t = timestamp / 1000.0;
    const dt = 1.0 / 60.0;
-   while (globals.time + dt <= t) {
-      globals.time += dt;
+   while (globals.updated_time + dt <= t) {
+      globals.updated_time += dt;
       for (let girl of girls) {
          girl.update(dt);
       }
@@ -580,7 +580,7 @@ function tick(timestamp) {
 }
 
 function tick_wait(timestamp) {
-   globals.time = timestamp / 1000.0;
+   globals.updated_time = timestamp / 1000.0;
    if (globals.resource_loader.completed()) {
       tick(timestamp);
    } else {
