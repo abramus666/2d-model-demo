@@ -1,4 +1,4 @@
-[Run demo](https://abramus666.github.io/2d-model-demo/)
+[Click to run the demo](https://abramus666.github.io/2d-model-demo/)
 
 Demo showing an animated 2D model of a walking girl. There are two versions, both implemented in WebGL:
 - The first version uses basic texturing with no lighting.
